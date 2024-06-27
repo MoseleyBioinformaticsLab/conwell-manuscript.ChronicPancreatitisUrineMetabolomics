@@ -1,0 +1,55 @@
+---
+title: "Software and Code, and Data Availability"
+author: "Robert M Flight"
+date: last-modified
+date-format: YYYY-MM-DD HH:mm
+format: docx
+---
+
+```{r}
+#| label: setup
+#| include: false
+knitr::opts_chunk$set(echo = FALSE)
+source(here::here("packages.R"))
+```
+
+```{r}
+#| label: load-targets
+#| include: false
+tar_load(dependencies)
+
+get_package_version = function(dependency_obj, package_name) {
+  #dependency_obj = dependencies
+  #package_name = "ComplexHeatmap"
+  tmp_df = dependency_obj$package |>
+    dplyr::filter(package %in% package_name)
+  if (is.na(tmp_df$loadedversion)) {
+    use_version = tmp_df$ondiskversion
+  } else {
+    use_version = tmp_df$loadedversion
+  }
+  package_version = paste0(tmp_df$package, " v", use_version)
+  if (grepl("Github", tmp_df$source)) {
+    package_version = paste0(package_version, " (", gsub("\\(", "", strtrim(tmp_df$source, nchar(tmp_df$source) - 34)), ")")
+  }
+  package_version
+}
+```
+
+## Software, Code and Data Availability
+
+All calculations were performed using `r dependencies$platform$version`, with the following packages and versions: 
+
+* creation of raincloud plots: `{r} get_package_version(dependencies, "ggrain")`
+* general plotting: `{r} get_package_version(dependencies, "ggplot2")`
+* calculation of principal component variances and associates: `{r} get_package_version(dependencies, "visualizationQualityControl")`
+* receiver operating curves and plots: `{r} get_package_version(dependencies, "pROC")`
+* UpSet plots and heatmaps: `{r} get_package_version(dependencies, "ComplexHeatmap")`
+* ICI-Kendall-tau calculations: `{r} get_package_version(dependencies, "ICIKendallTau")`
+* Hierarchical clustering reordering: `{r} get_package_version(dependencies, "dendsort")`
+* Workflow control: `{r} get_package_version(dependencies, "targets")`
+
+A full list of all installed R packages can be found in the renv.lock file in the Zenodo repository at https://dx.doi.org/10.5281/zenodo.12190086.
+
+All code used for the analysis is available on GitHub at https://github.com/MoseleyBioinformaticsLab/conwell-manuscript.ChronicPancreatitisUrineMetabolomics/, and on Zenodo at https://dx.doi.org/10.5281/zenodo.12190086.
+

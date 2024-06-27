@@ -1,0 +1,571 @@
+---
+title: "Urine Metabolomics Pancreatitis Differential Results"
+author: "Robert M Flight"
+date: last-modified
+date-format: YYYY-MM-DD HH:mm
+format: 
+  docx:
+    keep-md: true
+  html:
+    toc: true
+    self-contained: true
+bibliography: conwell_pancreatitis_metabolomics.json
+---
+
+```{r}
+#| label: setup
+#| include: false
+## target knits qmds in their own session, so load libraries here.
+source(here::here("packages.R"))
+## if you want access to the functions you've written
+lapply(list.files(here::here("./R"), full.names = TRUE), source)
+
+figure_count = dn_counter$new()
+table_count = dn_counter$new(prefix = "Table ")
+
+knitr::opts_chunk$set(echo = FALSE,
+                      message = FALSE,
+                      warning = FALSE,
+                      fig.width = 10,
+                      fig.height = 8,
+                      dev = c('ragg_png', 'svg'),
+                      dpi = 600,
+                      fig.process = figure_count$modify_path)
+
+```
+
+```{r}
+#| label: load-targets
+#| include: false
+tar_load(c(gr_differences_metabolite,
+           gr_ratio_differences_metabolite,
+           gr_differences_raincloud,
+           gr_ratio_direct_compare,
+           gr_diff_anova,
+           gr_diff_cut,
+           gr_ratio_cut,
+           gr_ratio_anova,
+           gr_ratio_ranked_logfc,
+           normalized_gr_only,
+           samples_gr_only_nout,
+           ici_cor_gr,
+           all_info,
+           ici_cor_features_gr,
+           pancreatitis_colors,
+           gr_diff_othertests,
+           gr_other_comparisons,
+           feature_metadata,
+           gr_classification_plots))
+```
+
+```{r}
+#| label: counters
+figure_count = figure_count$increment(c(
+  "gr-differences-plot",
+  "gr-differences-raincloud-named-negative",
+  "gr-differences-raincloud-named-positive",
+  "gr-differences-raincloud-unnamed",
+  "roc-named-positive",
+  "roc-named-negative",
+  "roc-unnamed",
+  "gr-ratio-differences",
+  "feature-feature-correlations-gr",
+  "feature-intensities-patients-gr",
+  "upset-other-tests"
+))
+
+table_count = table_count$increment(c(
+  "direct-table-named",
+  "direct-table-unnamed",
+  "ratio-table",
+  "gt-ratio-ranked",
+  "gr-other-comparison-table",
+  "gr-other-single-table"
+))
+```
+
+## Purpose
+
+Differential analysis of pancreatitis urine metabolites between Green I and Red patient groups.
+There is an [Executive Summary](#executive-summary) at the end of this document.
+
+## Data
+
+Median normalized metabolite intensities, or metabolite - metabolite ratio data.
+
+## Methods
+
+Metabolite abundances in each sample were normalized by calculating the median abundance in each sample, and dividing the abundances by the sample median.
+Metabolite abundances include only a few zero values (N = 4 across all metabolites and samples) that were subsequently treated as *missing*.
+Sample - sample correlations were calculated using information-content-informed Kendall-Tau (ICI-Kt), and median sample correlations used to detect possible outlier samples.
+No outlier samples were detected, and all samples were used for differential calculations.
+Prior to calculation of metabolite - metabolite ratios, any missing values were replaced with the lowest observed value for that metabolite across samples.
+For each normalized metabolite or metabolite - metabolite ratio, a t-test was calculated using the $log_2$ values in the Red and Green I patients.
+Any missing values were removed prior to the t-test calculation.
+P-values were adjusted using the Benjamini-Hochberg procedure [@benjaminiControllingFalseDiscovery1995].
+
+For association with other patient covariates in the Red and Green I samples, ANOVA was used to perform the statistical test of $log_2$ values with the covariate, regardless of whether there were only two more more categories.
+Missing values were removed prior to the ANOVA calculation.
+Some covariates necessitated special handling prior to ANOVA.
+Diabetes status (`diabetes_bl`) required changing all of the "N/A" instances to "Normal".
+Etiology status (`etiology`) required removing all of the "missing" instances (encoded as -999) before the ANOVA.
+
+
+
+
+## Results
+
+```{r}
+#| label: n_diff
+n_direct = sum(gr_differences_metabolite$significant)
+n_ratio = sum(gr_ratio_differences_metabolite$significant)
+```
+
+### Direct Comparison
+
+From the direct comparison of metabolites in the Green I and Red patients, `r n_direct` metabolites had an adjusted p-value <= `r gr_diff_cut`.
+The volcano plot of log-fold-changes and p-values is shown in `r figure_count$label_text("gr-differences-plot")`.
+The red line corresponds to an adjusted p-value of `r gr_diff_cut`.
+
+The table of statistical results is shown in `r table_count$label_text("direct-table-named")` and `r table_count$label_text("direct-table-unnamed")`.
+
+`r table_count$label_text("direct-table-named")`.
+Statistics of direct comparisons of named metabolites for patients in control and CP disease groups.
+
+```{r}
+#| label: direct-table-named
+gr_differences_metabolite = dplyr::left_join(gr_differences_metabolite, feature_metadata[, c("feature_id", "feature_label", "feature_name", "named")], by = "feature_id")
+gr_sig_arranged_named = gr_differences_metabolite |>
+  dplyr::mutate(n_CP = n_x6, n_Control = n_x1, CP = x6, Control = x1) |>
+  dplyr::filter(significant & named) |>
+  dplyr::arrange(LogFC)
+gr_sig_table = gr_sig_arranged_named  |>
+  dplyr::mutate(Metabolite = feature_name) |>
+  dplyr::select(Metabolite, LogFC, CP, Control, p.value, p.adjust, n_CP, n_Control) |>
+  gt::gt() |>
+  gt::fmt_scientific(columns = c(p.value, p.adjust)) |>
+  gt::fmt_number(columns = c(LogFC, Control, CP))
+gr_sig_table
+```
+
+`r table_count$label_text("direct-table-unnamed")`.
+Statistics of direct comparisons of un-named metabolites for patients in control and CP disease groups.
+
+```{r}
+#| label: direct-table-unnamed
+gr_sig_arranged_unnamed = gr_differences_metabolite |>
+  dplyr::mutate(n_CP = n_x6, n_Control = n_x1, CP = x6, Control = x1) |>
+  dplyr::filter(significant & !named) |>
+  dplyr::arrange(LogFC)
+gr_sig_table_unnamed = gr_sig_arranged_unnamed  |>
+  dplyr::mutate(Metabolite = feature_name) |>
+  dplyr::select(Metabolite, LogFC, CP, Control, p.value, p.adjust, n_CP, n_Control) |>
+  gt::gt() |>
+  gt::fmt_scientific(columns = c(p.value, p.adjust)) |>
+  gt::fmt_number(columns = c(LogFC, Control, CP))
+gr_sig_table_unnamed
+```
+
+```{r}
+#| label: gr-differences-plot-setup
+gr_differences_metabolite = gr_differences_metabolite |>
+  dplyr::mutate(log_p = -1 * log10(p.value))
+gr_cutoff = gr_differences_metabolite |>
+  dplyr::filter(significant) |>
+  dplyr::pull(log_p) |>
+  min()
+
+
+gr_differences_named_sig = gr_differences_metabolite |>
+  dplyr::filter(significant & named)
+
+gr_diff_plot = gr_differences_metabolite |>
+  ggplot(aes(x = LogFC, y = log_p, text = metabolite)) +
+  geom_hline(yintercept = gr_cutoff, color = "red") +
+  geom_point() +
+  geom_point(data = gr_differences_named_sig, color = "red") +
+  ggrepel::geom_label_repel(data = gr_differences_named_sig, aes(label = feature_label)) +
+  labs(x = "Log-fold-change(CP / Control)",
+       y = "-1 x Log10(P-Value)")
+```
+
+```{r}
+#| label: gr-differences-plot
+if (knitr::is_html_output()) {
+  plotly::ggplotly(gr_diff_plot)
+} else {
+  gr_diff_plot
+}
+```
+
+`r figure_count$label_text("gr-differences-plot")`.
+Volcano plot of Red - Green I differences.
+Red line indicates an adjusted p-value of 0.05.
+
+
+For each of the metabolites with an adjusted p-value <= 0.05, we can plot the distribution of values in the control and chronic pancreatitis (CP) patients to verify the fold-change and p-values.
+
+```{r}
+#| label: gr-differences-raincloud-named-negative
+#| fig-height: 12
+#| fig-width: 10
+named_neg = gr_differences_named_sig |>
+  dplyr::filter(LogFC < 0) |>
+  dplyr::arrange(LogFC)
+  
+patchwork::wrap_plots(gr_differences_raincloud[named_neg$feature_id], ncol = 2, byrow = TRUE)
+```
+
+`r figure_count$label_text("gr-differences-raincloud-named-negative")`.
+Raincloud plots of the log2(metabolite) abundances for each group for each named metabolite with a negative log-fold-change.
+The raincloud plot is a combination of 3 plots: 1 - the original data points; 2 - a boxplot of the distribution; and 3 - a density estimate.
+
+```{r}
+#| label: gr-differences-raincloud-named-positive
+#| fig-height: 12
+#| fig-width: 10
+named_pos = gr_differences_named_sig |>
+  dplyr::filter(LogFC > 0) |>
+  dplyr::arrange(dplyr::desc(LogFC))
+  
+patchwork::wrap_plots(gr_differences_raincloud[named_pos$feature_id], ncol = 3, byrow = TRUE)
+```
+
+`r figure_count$label_text("gr-differences-raincloud-named-positive")`.
+Raincloud plots of the log2(metabolite) abundances for each group for each named metabolite with a positive log-fold-change.
+The raincloud plot is a combination of 3 plots: 1 - the original data points; 2 - a boxplot of the distribution; and 3 - a density estimate.
+
+```{r}
+#| label: gr-differences-raincloud-unnamed
+#| fig-height: 12
+#| fig-width: 10
+unnamed_features = gr_differences_metabolite |>
+  dplyr::filter(significant & !named) |>
+  dplyr::arrange(LogFC)
+patchwork::wrap_plots(gr_differences_raincloud[unnamed_features$feature_id], ncol = 4, byrow = TRUE)
+```
+
+`r figure_count$label_text("gr-differences-raincloud-unnamed")`.
+Raincloud plots of the log2(metabolite) abundances for each group for each un-named metabolite.
+The raincloud plot is a combination of 3 plots: 1 - the original data points; 2 - a boxplot of the distribution; and 3 - a density estimate.
+
+#### ROCs for Differential Metabolites
+
+```{r}
+#| label: roc-named-negative
+patchwork::wrap_plots(gr_classification_plots[named_neg$feature_id], ncol = 2, byrow = TRUE)
+```
+
+`r figure_count$label_text("roc-named-negative")`.
+ROC for the named, significant metabolites with a negative log-fold-change.
+
+```{r}
+#| label: roc-named-positive
+#| fig-width: 12
+#| fig-height: 12
+patchwork::wrap_plots(gr_classification_plots[named_pos$feature_id], ncol = 3, byrow = TRUE)
+```
+
+`r figure_count$label_text("roc-named-positive")`.
+ROC for the named, significant metabolites with a positive log-fold-change.
+
+
+
+```{r}
+#| label: roc-unnamed
+#| fig-width: 14
+#| fig-height: 14
+patchwork::wrap_plots(gr_classification_plots[unnamed_features$feature_id], ncol = 4, byrow = TRUE)
+```
+
+`r figure_count$label_text("roc-unnamed")`.
+ROC for the unnamed, significant metabolites.
+
+
+#### Multiway ANOVA
+
+One concern would be that some of the differences in metabolites are due to not just the disease cohort, but also due to the diabetic status and / or gender of the patient.
+For just this analysis, we replaced the diabetes status of "N/A" with "No".
+You can see the justification for this in the QC/QA document.
+A simple way to check this is instead of doing a t-test just on disease cohort, we can run a multiway ANOVA where we include disease, diabetes, gender and their interactions in the model.
+
+The way that looks in R is:
+
+$$aov(log\_intensity \sim cohort\_c + diabetes\_bl + gender + cohort\_c:diabetes\_bl + cohort\_c:gender)$$
+This model includes all of the factors that we think are potentially contributing, and allows us to get p-values directly for each term and their interactions.
+Caveat: ANOVA makes different assumptions around normality than the t-test, so the set of things metabolites that are significant by ANOVA will be slightly different than those returned from the t-test.
+
+More importantly, however, is that the set of things with an adjusted p-value <= 0.05 from `cohort_c` in the ANOVA model are completely different than anything in the other terms, and in fact the only other term with adjusted p-value <= 0.05 is diabetes status, with myo-inosotol.
+
+### Metabolite - Metabolite Ratio Comparisons
+
+```{r}
+#| label: n-mannose-18242
+n_mannose = gr_ratio_differences_metabolite |>
+  dplyr::filter(significant) |>
+  dplyr::filter((metabolite1 %in% "mannose") | (metabolite2 %in% "mannose")) |>
+  nrow()
+n_18242 = gr_ratio_differences_metabolite |>
+  dplyr::filter(significant) |>
+  dplyr::filter((metabolite1 %in% "18242") | (metabolite2 %in% "18242")) |>
+  nrow()
+```
+
+Compared to the direct comparison, the ratio results had many, many more significant entries.
+To make them somewhat tractable, we used a more stringent cutoff of `r gr_ratio_cut`.
+
+`r table_count$label_text("ratio-table")`.
+Statistics of metabolite - metabolite ratios comparison for patients in Green I and Red disease groups.
+The top 20 ranked ratios by absolute log-fold-change are shown here after removing **mannose** from the results (N significant `r n_mannose`).
+Un-identified metabolite 18242 also has a large number of significant ratios (N significant `r n_18242`).
+
+```{r}
+#| label: ratio-table
+gr_sig_ratio_table = gr_ratio_differences_metabolite |>
+  dplyr::filter(!(metabolite1 %in% "mannose") & !(metabolite2 %in% "mannose")) |>
+  dplyr::filter(significant) |>
+  dplyr::arrange(dplyr::desc(abs(LogFC))) |>
+  dplyr::slice_head(n = 20) |>
+  dplyr::arrange(LogFC) |>
+  dplyr::select(metabolite1, metabolite2, LogFC, x6, x1, p.value, p.adjust) |>
+  gt::gt() |>
+  gt::fmt_scientific(columns = c(p.value, p.adjust)) |>
+  gt::fmt_number(columns = c(LogFC, x1, x6))
+gr_sig_ratio_table
+```
+
+Alternatively, we can sum the absolute log-fold-changes for each metabolite in each significant ratio to get a ranked list of the metabolites involved in the significant ratios.
+Those that appeared in more than **10** significant ratios are shown in `r table_count$label_text("gt-ratio-ranked")`.
+
+```{r}
+#| label: gr-ratio-ranked
+gr_ratio_ranked_logfc |>
+  dplyr::filter(N_ratio >= 10) |>
+  dplyr::arrange(dplyr::desc(LogFC_sum)) |>
+  gt::gt() |>
+  gt::fmt_number(columns = LogFC_sum, decimals = 1)
+```
+
+```{r}
+#| label: gr-ratio-differences-setup
+gr_ratio_differences_metabolite = gr_ratio_differences_metabolite |>
+  dplyr::mutate(log_p = -1 * log10(p.value))
+gr_ratio_cutoff = gr_ratio_differences_metabolite |>
+  dplyr::filter(significant) |>
+  dplyr::pull(log_p) |>
+  min()
+
+has_mannose_18242 = gr_ratio_differences_metabolite |>
+  dplyr::filter(grepl("mannose|18242", metabolite1) | grepl("mannose|18242", metabolite2)) |>
+  dplyr::mutate(mannose_or_18242 = dplyr::case_when(
+    grepl("mannose", metabolite1) ~ "mannose",
+    grepl("mannose", metabolite2) ~ "mannose",
+    grepl("18242", metabolite1) ~ "18242",
+    grepl("18242", metabolite2) ~ "18242"
+  )) |>
+  dplyr::mutate(mannose_or_18242 = factor(mannose_or_18242, levels = c("mannose", "18242")))
+
+gr_ratio_diff_plot = gr_ratio_differences_metabolite |>
+  ggplot(aes(x = LogFC, y = log_p, text = paste0(metabolite1, " - ", metabolite2))) +
+  geom_hline(yintercept = gr_ratio_cutoff, color = "red") +
+  geom_point(alpha = 0.2, color = "grey") +
+  geom_point(mapping = aes(color = mannose_or_18242), data = has_mannose_18242) +
+  labs(x = "Log-fold-change(Red / Green I)",
+       y = "-1 x Log10(P-Value)") +
+  theme(legend.title = element_blank(),
+        legend.position = c(0.8, 0.1))
+```
+
+
+```{r}
+#| label: gr-ratio-differences
+if (knitr::is_html_output()) {
+  plotly::ggplotly(gr_ratio_diff_plot)
+} else {
+  gr_ratio_diff_plot
+}
+```
+
+`r figure_count$label_text("gr-ratio-differences")`.
+Volcano plot of Red - Green I metabolite-metabolite ratio differences.
+Red line indicates an adjusted p-value of `r gr_ratio_cut`.
+
+#### Multiway ANOVA
+
+```{r}
+#| label: which-ratio-anova
+which_ratio_anova = purrr::imap(gr_ratio_anova$sig_list, function(.x, .y){
+  if (nrow(.x) > 0) {
+    return(tibble::tibble(term = .y, n = nrow(.x)))
+  } else {
+    return(NULL)
+  }
+}) |>
+  dplyr::bind_rows()
+report_strings = which_ratio_anova |>
+  dplyr::rowwise() |>
+  dplyr::mutate(report_str = paste0(gsub("_", " and ", term), " with ", n, " significant ratios"))
+```
+
+In contrast to the direct comparisons, the multiway ANOVA using ratios did turn up some other things significant, however they were very few compared to the number of ratios significant using the t-test (`r sum(gr_ratio_differences_metabolite$significant)`).
+In particular, terms `r paste0(report_strings$report_str, collapse = "; ")`.
+
+### Similarity of Ratio and Direct Comparisons
+
+We can also ask if there were any **different** metabolites in the significant ratio entries compared to the significant direct comparisons.
+We actually queried all of the significant metabolites in the ratio results, and then checked if one of the pairs was from the direct comparison.
+There were `r nrow(gr_ratio_direct_compare)` significant ratios where one member **was not** from the direct comparison results.
+
+## Feature - Feature Correlations in Green I & Red
+
+For each feature, we calculated the ICI-Kt correlations amongst all features across the Green I and Red samples.
+We then trim to just the significant features, to see if anything behaves very similarly.
+The heatmap of correlations is shown in `r figure_count$label_text("feature-feature-correlations-gr")`.
+
+
+```{r}
+#| label: feature-feature-correlations-gr
+gr_sig_all = unique(c(gr_sig_arranged_named$feature_id, gr_sig_arranged_unnamed$feature_id))
+ff_cor = ici_cor_features_gr$cor[gr_sig_all, gr_sig_all]
+ff_cor_arrange = similarity_reorder(ff_cor, transform = "sub_1")
+ff_cor_new = ff_cor[ff_cor_arrange$indices, ff_cor_arrange$indices]
+n_break = 20
+cor_map = circlize::colorRamp2(seq(-1, 1, length.out = n_break), scico::scico(n_break,
+                                                                              palette = "vik"))
+labels_from_rownames = function(in_names, in_df){
+  # in_names = rownames(ff_cor_new)
+  # in_df = feature_metadata
+  heatmap_labels = in_df$feature_label
+  names(heatmap_labels) = in_df$feature_id
+  heatmap_labels = heatmap_labels[in_names]
+  
+  heatmap_labels
+}
+
+ff_cor_labels = labels_from_rownames(rownames(ff_cor_new), feature_metadata)
+Heatmap(ff_cor_new, col = cor_map, name = "ICI-Kt",
+        cluster_rows = FALSE,
+        cluster_columns = FALSE,
+        column_title = "ICI-Kendell-tau Correlation Heatmap",
+        column_title_gp = gpar(fontsize = 10),
+        column_names_gp = gpar(fontsize = 8),
+        row_names_gp = gpar(fontsize = 8),
+        row_labels = ff_cor_labels,
+        column_labels = ff_cor_labels)
+```
+
+`r figure_count$label_text("feature-feature-correlations-gr")`.
+Feature-feature ICI-Kt correlations in the Green I and Red patient samples.
+
+It looks like there are clusters of features in here based on their feature - feature correlations.
+
+We can also plot the heatmap of feature abundances across the Green I and Red patients, and use the above ordering to order the features, as shown in `r figure_count$label_text("feature-intensities-patients-gr")`.
+
+```{r}
+#| label: feature-intensities-patients-gr
+sig_features = normalized_gr_only |>
+  dplyr::filter(feature_id %in% gr_sig_all,
+                sample_id %in% samples_gr_only_nout)
+
+raw_cor_gr = ici_cor_gr$cor[samples_gr_only_nout, samples_gr_only_nout]
+sample_info2_gr = as.data.frame(all_info) |>
+  dplyr::filter(sample_id %in% samples_gr_only_nout)
+rownames(sample_info2_gr) = sample_info2_gr$sample_id
+cor_order_gr_class = similarity_reorderbyclass(raw_cor_gr, sample_classes = sample_info2_gr[, "cohort_c", drop = FALSE], transform = "sub_1")
+
+sig_features_wide = sig_features |>
+  dplyr::select(sample_id, feature_id, intensity) |>
+  tidyr::pivot_wider(names_from = "sample_id", values_from = "intensity")
+sig_features_matrix = sig_features_wide |>
+  dplyr::select(-feature_id) |>
+  as.matrix()
+rownames(sig_features_matrix) = sig_features_wide$feature_id
+
+sig_features_matrix = sig_features_matrix[, cor_order_gr_class$names]
+sig_features_matrix = log2(sig_features_matrix)
+sig_features_matrix = sig_features_matrix[rownames(ff_cor), ]
+
+sig_colors = circlize::colorRamp2(seq(-5, 5, length.out = 20), viridis::viridis(20))
+color_list = list(cohort_c = pancreatitis_colors$all_groups[c("1", "6")])
+
+sample_info3 = sample_info2_gr[cor_order_gr_class$names, ]
+row_annotation = HeatmapAnnotation(df = as.data.frame(sample_info3[, c("cohort_c"), drop = FALSE]),
+                                  col = color_list, which = "row",
+                                  show_annotation_name = FALSE,
+                                  show_legend = FALSE)
+
+sig_features_label = labels_from_rownames(rownames(sig_features_matrix), feature_metadata)
+
+Heatmap(t(sig_features_matrix), col = sig_colors, name = "Log2-\nAbundance",
+        cluster_rows = FALSE,
+        cluster_columns = ff_cor_arrange$dendrogram,
+        left_annotation = row_annotation,
+        column_title = "Metabolite Abundance by Patient",
+        column_title_gp = gpar(fontsize = 10),
+        column_names_gp = gpar(fontsize = 8),
+        show_row_names = FALSE,
+        column_labels = sig_features_label)
+```
+
+`r figure_count$label_text("feature-intensities-patients-gr")`.
+Significant metabolite abundances by patient, clustered by ICI-Kt correlation.
+
+
+## Metabolites Differential for Other Covariates
+
+In addition to testing for statistical differences with disease, we can also test for statistical differences with other patient covariates.
+These included:
+
+- Age
+- Smoking Status
+- Race
+- BMI Group
+- Gender
+- Etiology
+- Drinking Status
+- DXA Result
+- Diabetes Status
+
+The UpSet plot in `r figure_count$label_text("upset-other-tests")` shows that the primary covariate that the differential metabolites intersect with are those from diabetes status, with a couple others shared with age and smoking status.
+Which metabolites are in each column or group of combinations of covariates are listed in `r table_count$label_text("gr-other-comparison-table")`.
+
+
+```{r}
+#| label: upset-other-tests
+draw(gr_other_comparisons$upset, padding = unit(c(2, 8, 2, 2), "mm"))
+```
+
+`r figure_count$label_text("upset-other-tests")`.
+UpSet plot of significant metabolites from pancreatitis **stage** (Green and Red I), and other patient covariates.
+Columns denote the intersection of covariates, and how many metabolites are shared between that intersection.
+Rows indicate which covariate, as well as the number of significant metabolites in that covariate.
+Only metabolites significant in two or more covariates are considered here.
+
+```{r}
+#| label: gr-other-comparison-table
+gr_other_comparisons$multiple_table
+```
+
+`r table_count$label_text("gr-other-comparison-table")`.
+The list of metabolites and their adjusted p-values from each covariate, corresponding to what is shown in `r figure_count$label_text("upset-other-tests")`.
+Each column here is a "Group" of metabolites, and the bolded entries denote significant adjusted p-values in the corresponding covariate statistical test.
+
+```{r}
+#| label: gr-other-single-table
+gr_other_comparisons$single_table
+```
+
+`r table_count$label_text("gr-other-single-table")`.
+List of metabolites that were significant in only one covariate, by covariate and then by adjusted p-value in that covariate.
+
+
+## Executive Summary
+
+* Comparison of Green I vs Red patient groups.
+* `r sum(gr_differences_metabolite$significant)` metabolites significant, sum named and some not.
+* Metabolite - metabolite ratios (n = `r sum(gr_ratio_differences_metabolite$significant)`) did show new metabolites over the direct comparison.
+* Plots of the raw values demonstrate that the differences are real, but the distributions are extremely wide and overlapping.
+* Multiway ANOVA showed that the other factors, namely diabetes and gender, do not seem to be associated with the changes in abundances.
+* Statistical results for the direct and ratio comparisons are provided in `conwell_pancreatitis_output_tables_YYYY-MM-DD.xlsx`.
+
+## References

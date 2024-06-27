@@ -1,0 +1,796 @@
+---
+title: "Urine Metabolomics Pancreatitis QC/QA"
+author: "Robert M Flight"
+date: last-modified
+date-format: YYYY-MM-DD HH:mm
+format: 
+  docx:
+    keep-md: true
+  html:
+    toc: true
+    self-contained: true
+bibliography: conwell_pancreatitis_metabolomics.json
+---
+
+
+```{r}
+#| label: version-strings
+#| include: false
+R_ver = paste0(R.version$major, ".", R.version$minor)
+visqc_ver = packageVersion("visualizationQualityControl")
+```
+
+## Purpose
+
+Quality control / quality analysis (QC/QA) report of the urine metabolomics from pancreatitis samples.
+There is an [Executive Summary](#executive-summary) at the end of this report.
+
+This report should have been supplied as two versions:
+
+1. A Word document.
+1. A self-contained HTML file with possibly some interactive graphics.
+
+## Data
+
+Data consists of urine measured metabolites, and various sample metadata.
+
+## Methods
+
+We analyzed all the data using R v `r R_ver` [@rcoreteamLanguageEnvironmentStatistical2021a]. 
+Data were read in using `readxl` or `readr` depending on source.
+For metadata, extra metadata was joined to basic metadata supplied using the `processing_id`.
+Samples were normalized by osmolarity alone, median abundance, or combination of osmolarity and median abundance.
+
+Sample-sample correlations were calculated using information-content-informed Kendall-tau, a modification of Kendall-tau correlation to allow the inclusion of missing values [@flightInformationContentInformedKendalltauCorrelation2022a].
+Almost all of the analysis below uses the intensities directly provided, so the correlations here should correspond almost 1:1 to a normal Kendall-tau.
+
+Statistical tests of sample metadata to sample principal component scores were performed using ANOVA tests implemented in the `visualizationQualityControl` package v `r visqc_ver` [@flightVisualizationQualityControlDevelopmentVisualization2021].
+
+We determined the limit of detection (LOD) across all metabolites from the mean and standard deviation of each metabolite in the pooled samples.
+Generating bins of 0.05 across the mean, we calculated the standard deviation of the standard deviation (SDoSD) of the mean values within each bin, and examine the plot to determine where the SDoSD begines to increase.
+
+```{r}
+#| label: setup
+#| include: false
+## target knits qmds in their own session, so load libraries here.
+source(here::here("packages.R"))
+## if you want access to the functions you've written
+lapply(list.files(here::here("./R"), full.names = TRUE), source)
+
+figure_count = dn_counter$new()
+table_count = dn_counter$new(prefix = "Table ")
+
+knitr::opts_chunk$set(echo = FALSE,
+                      message = FALSE,
+                      warning = FALSE,
+                      fig.width = 10,
+                      fig.height = 8,
+                      dev = c('ragg_png', 'svg'),
+                      dpi = 600,
+                      fig.process = figure_count$modify_path)
+
+```
+
+```{r}
+#| label: load-targets
+#| include: false
+tar_load(c(all_info,
+           normalized_data,
+           outlier_data,
+           ici_cor,
+           pca_runs,
+           pancreatitis_colors,
+           ici_cor_gr,
+           pca_gr_only_nout,
+           pca_vs_attributes_gr_only_nout,
+           pca_0,
+           ici_0,
+           mean_sd_intensity,
+           normalized_data_zero,
+           mean_cutoff,
+           feature_ratios,
+           ici_cor_ratios,
+           pca_loadings_gr_only_nout,
+           outlier_samples_gr_only,
+           feature_metadata))
+```
+
+```{r}
+#| label: counters
+figure_count = figure_count$increment(c(
+  "normalization-boxplots",
+  "ici-heatmap",
+  "off-diagonal-correlation",
+  "example-correlation",
+  "pca-1",
+  "ici-heatmap-gr",
+  "ici-heatmap-gr-grouped",
+  "gr-outliers",
+  "gr-outliers-heatmap",
+  "pca-gr",
+  "loading-gr",
+  "pca-combined-figure",
+  "pca-gr-diabetic",
+  "lod-plot",
+  "ratio-boxplots",
+  "ratio-cor"
+))
+table_count = table_count$increment(c(
+  "sample-table",
+  "race-table",
+  "gender-table",
+  "pc-tests-gronly",
+  "pc-tests-gronly-pc1",
+  "table-cohort-year",
+  "table-significant-pc1-pc3",
+  "table-diabetic",
+  "gr-loadings",
+  "gr-pca-table"
+  ))
+```
+
+## All Data
+
+To start, we examine correlation and principal component analysis grouping using **all** of the data, including the pooled quality-control samples provided by the metabolomics core.
+
+Let's first double check how many of each disease group of samples we have.
+The counts are shown in `r table_count$label_text("sample-table")`.
+`r table_count$label_text(c("race-table", "gender-table"))` show the breakdown by race and gender, respectively.
+
+`r table_count$label_text("sample-table")`.
+Number of samples in each disease group.
+
+```{r}
+#| label: sample-table
+sample_table = all_info |>
+  dplyr::select(cohort_group, cohort_c) |>
+  dplyr::group_by(cohort_group, cohort_c) |>
+  dplyr::summarise(n_samples = dplyr::n()) |>
+  dplyr::ungroup() |>
+  gt::gt()
+sample_table
+```
+
+`r table_count$label_text("race-table")`.
+Number of samples by race.
+
+```{r}
+#| label: race-table
+race_table = all_info |>
+  dplyr::select(race_pt) |>
+  dplyr::group_by(race_pt) |>
+  dplyr::summarise(n_samples = dplyr::n()) |>
+  dplyr::ungroup() |>
+  gt::gt()
+race_table
+```
+
+`r table_count$label_text("gender-table")`.
+Number of samples by gender.
+
+```{r}
+#| label: gender-table
+gender_table = all_info |>
+  dplyr::select(gender) |>
+  dplyr::group_by(gender) |>
+  dplyr::summarise(n_samples = dplyr::n()) |>
+  dplyr::ungroup() |>
+  gt::gt()
+gender_table
+```
+
+
+### Need for Normalization
+
+We can check whether samples need more than osmolarity normalization by examinging boxplots of the metabolite intensity distribution before and after normalization.
+These are shown in `r figure_count$label_text("normalization-boxplots")`.
+As shown, we don't think that using **osmolarity** alone is enough for normalization for these samples.
+Interestingly, median or osmolarity+median normalization give the same intensities.
+
+```{r}
+#| label: normalization-boxplots
+#| fig-width: 12
+#| fig-height: 18
+normalized_plots = purrr::imap(normalized_data, function(in_data, in_label){
+  in_data = in_data |>
+    dplyr::mutate(cohort_c = as.factor(cohort_c))
+  out_plot = in_data |>
+    ggplot(aes(x = disease_sample, y = log(intensity), color = cohort_c)) +
+    geom_boxplot() +
+    theme(axis.text.x = element_blank()) +
+    scale_colour_manual(values = pancreatitis_colors$all_groups) +
+    labs(subtitle = in_label)
+  out_plot
+})
+
+normalized_plots = normalized_plots[c("none", "osmolarity", "median", "osmo_med")]
+
+patchwork::wrap_plots(normalized_plots, ncol = 1, guides = "collect")
+```
+
+`r figure_count$label_text("normalization-boxplots")`.
+Metabolite log(intensity) boxplots for no normalization (none), median normalization (median), osmolarity normalization, or both median and osmolarity normalizatin (osmo-med), with samples colored by which disease group they belong to (cohort_c).
+
+### ICI-Kt
+
+For all sample-sample pairs, we calculate the ICI-Kt correlation (see Methods).
+These correlations are shown as a heatmap in `r figure_count$label_text("ici-heatmap")`.
+The way to read this heatmap is that the correlation values are encoded as a color, and each square is the correlation of each sample with another sample.
+So row 1, column 2 (and column 1, row 2) represents the correlation of pooled sample 1 to pooled sample 2.
+The disease group of each sample is encoded by the colors along the rows and columns of the heatmap.
+The ordering of the samples in the heatmap is decided by treating the correlation as a similarity (1 - correlation), and then clustering them using hierarchical clustering.
+Therefore, ideally we would see groups of high correlating samples that also group by their disease status.
+
+```{r}
+#| label: ici-heatmap
+raw_cor = ici_cor$cor
+sample_info2 = as.data.frame(all_info)
+rownames(sample_info2) = sample_info2$sample_id
+sample_info2 = sample_info2[rownames(raw_cor), ]
+cor_order = similarity_reorder(raw_cor, transform = "sub_1")
+
+cor_colors = pancreatitis_colors$all_groups
+
+sample_info3 = sample_info2[cor_order$indices, ]
+cor_vals = raw_cor[cor_order$indices, cor_order$indices]
+color_list = list(cohort_c = cor_colors)
+row_annotation = HeatmapAnnotation(df = as.data.frame(sample_info3[, c("cohort_c"), drop = FALSE]),
+                                  col = color_list, which = "row",
+                                  show_annotation_name = FALSE)
+col_annotation = HeatmapAnnotation(df = as.data.frame(sample_info3[, c("cohort_c"), drop = FALSE]),
+                                  col = color_list, which = "column",
+                                  show_legend = FALSE, show_annotation_name = FALSE)
+
+cor_map = circlize::colorRamp2(seq(0.25, 1, length.out = 20), viridis::viridis(20))
+
+Heatmap(cor_vals, col = cor_map, name = "ICI-Kt",
+        bottom_annotation = col_annotation,
+        right_annotation = row_annotation,
+        cluster_rows = FALSE,
+        cluster_columns = FALSE,
+        column_title = "ICI-Kendell-tau Correlation Heatmap",
+        column_title_gp = gpar(fontsize = 10),
+        column_names_gp = gpar(fontsize = 8),
+        row_names_gp = gpar(fontsize = 8))
+```
+
+`r figure_count$label_text("ici-heatmap")`.
+ICI-Kt correlation heatmap of all samples, ordered by similarity (1 - correlation) and colored by disease group.
+
+This, we admit is not what we hope to see.
+There are not large groups of high correlations that also correspond to disease group.
+In fact, there doesn't seem to be anything with **really high** correlation outside of the pooled replicates.
+The **highest** correlations should be just off the diagonal, i.e. the correlation with the nearest neighbor, except where there are bigger differences.
+Let's see what that distribution looks like, in `r figure_count$label_text("off-diagonal-correlation")`.
+
+```{r}
+#| label: off-diagonal-correlation
+diagonal_cor_vals = rep(NA, nrow(cor_vals))
+for (ival in seq(16, nrow(cor_vals) - 1)) {
+  diagonal_cor_vals[ival] = cor_vals[ival, ival + 1]
+}
+
+diagonal_df = tibble::tibble(ici = diagonal_cor_vals)
+diagonal_plot = diagonal_df |>
+  ggplot(aes(x = ici)) +
+  geom_histogram(bins = 30)
+
+
+red_green_cor = format(cor_vals["lusczek_138", "lusczek_030"], digits = 3)
+diagonal_plot
+```
+
+`r figure_count$label_text("off-diagonal-correlation")`.
+Histogram of the direct neighbor ICI-Kt correlations (just off the diagonal) from `r figure_count$label_text("ici-heatmap")`.
+
+So a mean value of 0.62, which isn't stupendous, but also not too bad either.
+The real problem is that green and red samples have comparatively high correlations with each other.
+For example, the ICI-Kt correlation of "lusczek_138" (red) with "lusczek_030" (green) is `r red_green_cor`.
+
+We can confirm what this really looks like by plotting their actual intensities against each other too, shown in `r figure_count$label_text("example-correlation")`.
+
+```{r}
+#| label: example-correlation
+use_pca = pca_gr_only_nout$pca
+use_variance = pca_gr_only_nout$variance
+
+wide_data = normalized_data$osmo_med |>
+  dplyr::select(feature_id, sample_id, intensity) |>
+  dplyr::mutate(intensity = log10(intensity)) |>
+  tidyr::pivot_wider(id_cols = "feature_id", 
+                     names_from = "sample_id",
+                     values_from = "intensity")
+compare_plot = wide_data |>
+  ggplot(aes(x = lusczek_138, y = lusczek_030)) +
+  geom_point()
+compare_plot
+```
+
+`r figure_count$label_text("example-correlation")`.
+Plot of the log-intensities of lusczek_138 (red sample) vs lusczek_030 (green sample).
+
+### PCA
+
+We double check all of the above using principal components analysis (PCA), which operates slightly differently than the ICI-Kt correlation.
+`r figure_count$label_text("pca-1")` shows the first two principal components on the osmolarity+median normalized data, with samples colored by disease group.
+
+```{r}
+#| label: pca-1
+in_pca = pca_runs$osmo_med
+pca_plot = in_pca$pca |>
+    dplyr::mutate(cohort_c = as.factor(cohort_c)) |>
+    ggplot(aes(x = PC1, y = PC2, color = cohort_c)) +
+    geom_point(size = 3) +
+    labs(x = in_pca$variance$labels[1], y = in_pca$variance$labels[2]) +
+    scale_colour_manual(values = pancreatitis_colors$all_groups)
+pca_plot
+```
+
+`r figure_count$label_text("pca-1")`.
+PCA plot of samples colored by their disease group.
+
+
+## Green & Red Only
+
+Looking at `r figure_count$label_text("pca-1")`, we can see that all of the pooled samples cluster right in the middle of the plot, and in fact are just off the 0, 0 point on each of PC1 and PC2.
+It is possible that they are messing with things a bit.
+Therefore, we restrict the analysis to just green I and red samples (`cohort_c` values of 1 and 6, control and chronic pancreatitis, respectively).
+
+### ICI-Kt
+
+```{r}
+#| label: ici-heatmap-gr
+color_list2 = list(Cohort = c(`Control` = "#55FF55", `CP` = "#FF0000"))
+cp_df = data.frame(cohort_c = c(1, 6),
+                   Cohort = c("Control", "CP"))
+raw_cor_gr = ici_cor_gr$cor
+sample_info2_gr = as.data.frame(all_info)
+rownames(sample_info2_gr) = sample_info2_gr$sample_id
+sample_info2_gr = sample_info2_gr[rownames(raw_cor_gr), ]
+cor_order_gr = similarity_reorder(raw_cor_gr, transform = "sub_1")
+cor_order_gr_class = similarity_reorderbyclass(raw_cor_gr, sample_classes = sample_info2_gr[, "cohort_c", drop = FALSE], transform = "sub_1")
+
+sample_info3_gr = sample_info2_gr[cor_order_gr$indices, ]
+sample_info3_gr = dplyr::left_join(sample_info3_gr, cp_df, by = "cohort_c")
+cor_vals_gr = raw_cor_gr[cor_order_gr$indices, cor_order_gr$indices]
+row_annotation_gr = HeatmapAnnotation(df = as.data.frame(sample_info3_gr[, c("Cohort"), drop = FALSE]),
+                                  col = color_list2, which = "row",
+                                  show_annotation_name = FALSE)
+col_annotation_gr = HeatmapAnnotation(df = as.data.frame(sample_info3_gr[, c("Cohort"), drop = FALSE]),
+                                  col = color_list2, which = "column",
+                                  show_legend = FALSE, show_annotation_name = FALSE)
+
+Heatmap(cor_vals_gr, col = cor_map, name = "ICI-Kt",
+        bottom_annotation = col_annotation_gr,
+        right_annotation = row_annotation_gr,
+        cluster_rows = FALSE,
+        cluster_columns = FALSE,
+        column_title = "ICI-Kendell-tau Correlation Heatmap",
+        show_row_names = FALSE,
+        show_column_names = FALSE)
+```
+
+`r figure_count$label_text("ici-heatmap-gr")`.
+ICI-Kt heatmap of green I and red samples only, samples arranged by their sample - sample similarity.
+
+When grouped by the cohort group, there is nothing obviously wrong in the sample - sample correlations, as shown in `r figure_count$label_text("ici-heatmap-gr-grouped")`.
+
+```{r}
+#| label: ici-heatmap-gr-grouped
+sample_info4_gr = sample_info2_gr[cor_order_gr_class$names, ]
+cor_vals_gr_class = raw_cor_gr[cor_order_gr_class$indices, cor_order_gr_class$indices]
+row_annotation_gr_class = HeatmapAnnotation(df = as.data.frame(sample_info4_gr[, c("cohort_c"), drop = FALSE]),
+                                  col = color_list, which = "row",
+                                  show_annotation_name = FALSE)
+col_annotation_gr_class = HeatmapAnnotation(df = as.data.frame(sample_info4_gr[, c("cohort_c"), drop = FALSE]),
+                                  col = color_list, which = "column",
+                                  show_legend = FALSE, show_annotation_name = FALSE)
+Heatmap(cor_vals_gr_class, col = cor_map, name = "ICI-Kt",
+        bottom_annotation = col_annotation_gr_class,
+        right_annotation = row_annotation_gr_class,
+        cluster_rows = FALSE,
+        cluster_columns = FALSE,
+        column_title = "ICI-Kendell-tau Correlation Heatmap",
+        row_names_gp = gpar(fontsize = 8),
+        column_title_gp = gpar(fontsize = 10),
+        column_names_gp = gpar(fontsize = 8))
+```
+
+`r figure_count$label_text("ici-heatmap-gr-grouped")`.
+ICI-Kt heatmap of green I and red samples only, samples arranged by their sample - sample similarity within each cohort of samples.
+
+### Outlier Samples
+
+We can also use the median correlations and feature intensity distributions within each cohort of samples to check if any are outlier samples that should be removed prior to differential analysis.
+`r figure_count$label_text("gr-outliers")` shows that there is a single sample in cohort 1 (green I) that should be removed.
+
+```{r}
+#| label: gr-outliers
+outlier_samples_gr_only$both |>
+  ggplot(aes(x = sample_class, y = score, color = outlier, group = sample_class)) +
+  geom_sina() +
+  labs(x = "Cohort", y = "Score")
+```
+
+`r figure_count$label_text("gr-outliers")`.
+Sample scores, and indication of whether the sample should be considered an outlier based on the combination of metabolite intensity outlier fraction and sample - sample median correlations.
+
+```{r}
+#| label: gr-outliers-heatmap
+g_colors = scale_color_discrete()$palette(2)
+names(g_colors) = c("TRUE", "FALSE")
+color_list_outliers = list(Cohort = color_list2$Cohort,
+                           Outlier = g_colors)
+sample_info5_gr = dplyr::left_join(sample_info3_gr, outlier_samples_gr_only$both, by = "sample_id") |>
+  dplyr::mutate(Outlier = outlier)
+row_annotation_gr_out = HeatmapAnnotation(df = as.data.frame(sample_info5_gr[, c("Cohort", "Outlier"), drop = FALSE]),
+                                  col = color_list_outliers, which = "row",
+                                  show_annotation_name = FALSE)
+col_annotation_gr_out = HeatmapAnnotation(df = as.data.frame(sample_info5_gr[, c("Cohort", "Outlier"), drop = FALSE]),
+                                  col = color_list_outliers, which = "column",
+                                  show_legend = FALSE, show_annotation_name = FALSE)
+Heatmap(cor_vals_gr, col = cor_map, name = "ICI-Kt",
+        bottom_annotation = col_annotation_gr_out,
+        right_annotation = row_annotation_gr_out,
+        cluster_rows = FALSE,
+        cluster_columns = FALSE,
+        column_title = "ICI-Kendell-tau Correlation Heatmap",
+        show_row_names = FALSE,
+        show_column_names = FALSE,
+        row_names_gp = gpar(fontsize = 8),
+        column_title_gp = gpar(fontsize = 10),
+        column_names_gp = gpar(fontsize = 8))
+```
+
+`r figure_count$label_text("gr-outliers-heatmap")`. 
+ICI-Kt heatmap of Control and CP samples only, samples arranged by their sample - sample similarity. Colors indicate the class of sample, as well as whether the sample was detected as an outlier.
+
+### PCA
+
+```{r}
+#| label: pca-gr
+pca_point_size = 1.5
+pca_gr_only_pca = pca_gr_only_nout$pca
+pca_gr_only_pca = dplyr::left_join(pca_gr_only_pca, cp_df, by = "cohort_c")
+pca_gr_plot_1_2 = pca_gr_only_pca |>
+  ggplot(aes(x = PC1, y = PC2, color = Cohort)) +
+  geom_point(size = pca_point_size) +
+  scale_colour_manual(values = color_list2$Cohort) +
+  scale_fill_manual(values = color_list2$Cohort) +
+  geom_polygon(stat = "ellipse", aes(fill = Cohort, color = NULL), alpha = 0.1) +
+  labs(x = pca_gr_only_nout$variance$labels[1], y = pca_gr_only_nout$variance$labels[2]) +
+  theme(legend.position = "none")
+pca_gr_plot_1_3 = pca_gr_only_pca |>
+  ggplot(aes(x = PC1, y = PC3, color = Cohort)) +
+  geom_point(size = pca_point_size) +
+  scale_colour_manual(values = color_list2$Cohort) +
+  scale_fill_manual(values = color_list2$Cohort) +
+  geom_polygon(stat = "ellipse", aes(fill = Cohort, color = NULL), alpha = 0.1) +
+  labs(x = pca_gr_only_nout$variance$labels[1], y = pca_gr_only_nout$variance$labels[3]) +
+  theme(legend.position = c(0.8, 0.8))
+
+pca_gr_plot_2_3 = pca_gr_only_pca |>
+  ggplot(aes(x = PC2, y = PC3, color = Cohort)) +
+  geom_point(size = pca_point_size) +
+  scale_colour_manual(values = color_list2$Cohort) +
+  scale_fill_manual(values = color_list2$Cohort) +
+  geom_polygon(stat = "ellipse", aes(fill = Cohort, color = NULL), alpha = 0.1) +
+  labs(x = pca_gr_only_nout$variance$labels[2], y = pca_gr_only_nout$variance$labels[3]) +
+  theme(legend.position = "none")
+
+pca_gr_plot = pca_gr_only_nout$pca |>
+  dplyr::mutate(cohort_c = as.factor(cohort_c)) |>
+  ggplot(aes(x = PC1, y = PC3, color = cohort_c)) +
+  geom_point(size = 3) +
+  scale_colour_manual(values = pancreatitis_colors$all_groups) +
+  scale_fill_manual(values = pancreatitis_colors$all_groups) +
+  geom_polygon(stat = "ellipse", aes(fill = cohort_c, color = NULL), alpha = 0.1) +
+  labs(x = pca_gr_only_nout$variance$labels[1], y = pca_gr_only_nout$variance$labels[3])
+pca_gr_plot
+```
+
+`r figure_count$label_text("pca-gr")`.
+PCA of green and red samples only, after removing the outlier sample.
+Notice it still requires PC3 to separate them.
+
+We can also plot the loadings of the metabolites and see what is going on here.
+
+```{r}
+#| label: loading-gr
+trimmed_gr_loadings = purrr::map(pca_loadings_gr_only_nout, function(.x){
+  .x = .x |>
+    dplyr::mutate(feature_id = rownames(.x))
+  rownames(.x) = NULL
+  .x
+}) |> dplyr::bind_rows() |>
+  dplyr::transmute(feature_id, 
+                   p.value,
+                   PC = loading_index) |>
+  dplyr::filter(p.value <= 0.05)
+trimmed_gr_loadings = dplyr::left_join(trimmed_gr_loadings, 
+                                       feature_metadata[, c("feature_id", "bin_base_name")], 
+                                       by = "feature_id")
+pc1_pc3_sig_loading = trimmed_gr_loadings |>
+  dplyr::filter(PC %in% c("PC1", "PC3")) |>
+  dplyr::mutate(significant = TRUE) |>
+  dplyr::select(feature_id, bin_base_name, significant) |>
+  dplyr::distinct()
+
+gr_load_df_all = pca_gr_only_nout$raw_pca$rotation |>
+  tibble::as_tibble()
+gr_load_df_all$feature_id = rownames(pca_gr_only_nout$raw_pca$rotation)
+
+gr_load_df_sig = dplyr::inner_join(gr_load_df_all, pc1_pc3_sig_loading, by = "feature_id")
+
+gr_load_plot = ggplot(gr_load_df_all, aes(x = PC1, y = PC3)) + 
+  geom_point(size = 1) +
+  geom_point(data = gr_load_df_sig, color = "red", size = 1)
+
+gr_load_text_plot = gr_load_plot +
+  geom_text(data = gr_load_df_sig, aes(label = bin_base_name), nudge_y = 0.005, color = "red")
+gr_load_text_plot
+```
+
+`r figure_count$label_text("loading-gr")`.
+PCA loadings of metabolites on PC1 and PC3.
+Metabolites with a significant loading value for either of PC1 or PC3 (p-value <= 0.05) are shown in red and labeled.
+
+```{r}
+#| label: pca-combined-figure
+(pca_gr_plot_1_3 / gr_load_plot) | (pca_gr_plot_1_2 / pca_gr_plot_2_3)
+```
+
+`r figure_count$label_text("pca-combined-figure")`.
+Score plots of PC1 vs PC3, PC1 vs PC2, PC2 vs PC3, and the loadings of metabolites on PC1 vs PC3.
+
+### PC Scores vs Attributes
+
+We tested the sample attributes against their principal component scores.
+PC3 shows up as being very important, but interestingly, it seems to have the same p-value for both `cohort_group` and `year`.
+When we check the disease group by year, we see that green I (1) and red (6) are perfectly confounded by year.
+
+`r table_count$label_text("pc-tests-gronly")`.
+ANOVA associations of various sample attributes and principal components.
+
+```{r}
+#| label: pc-tests-gronly
+pc_table_gronly = pca_vs_attributes_gr_only_nout |>
+  dplyr::select(variable, PC, p.value, statistic, df) |>
+  dplyr::group_by(variable) |>
+  dplyr::arrange(p.value) |>
+  dplyr::slice_head(n = 3) |>
+  gt::gt() |>
+  gt::fmt_scientific(columns = c(p.value)) |>
+  gt::fmt_number(columns = c(statistic, df))
+pc_table_gronly
+```
+
+`r table_count$label_text("pc-tests-gronly-pc1")`.
+ANOVA results for PC1 and PC3 only.
+
+```{r}
+#| label: pc-tests-gronly-pc1
+pc1_table_gronly = pca_vs_attributes_gr_only_nout |>
+  dplyr::filter(PC %in% c("PC1", "PC3"), variable %in% c("year", "cohort_group")) |>
+  dplyr::select(variable, PC, p.value, statistic, df) |>
+  dplyr::arrange(p.value) |>
+  gt::gt() |>
+  gt::fmt_scientific(columns = c(p.value)) |>
+  gt::fmt_number(columns = c(statistic, df))
+pc1_table_gronly
+```
+
+`r table_count$label_text("table-cohort-year")`.
+Number of samples by disease group and year.
+Highlighted group 1 (green I) and group 6 (red).
+
+```{r}
+#| label: table-cohort-year
+table_cohort_year = use_pca |>
+  dplyr::select(cohort_c, year) |>
+  dplyr::group_by(cohort_c, year) |>
+  dplyr::summarise(n = dplyr::n()) |>
+  dplyr::ungroup() |>
+  tidyr::pivot_wider(id_cols = "cohort_c",
+                     names_from = "year",
+                     values_from = "n",
+                     values_fill = 0) |>
+  dplyr::select(cohort_c, `2017`, `2019`) |>
+  gt::gt()
+table_cohort_year
+```
+
+We can also return the statistics for all the things significant for PC1 - PC3,
+as well as all the values for *cohort_group*, as shown in `r table_count$label_text("table-significant-pc1-pc3")`.
+
+`r table_count$label_text("table-significant-pc1-pc3")`.
+Statistics and p-values for ANOVA tested attributes against sample scores for PCs 1 - 3.
+
+```{r}
+#| label: table-significant-pc1-pc3
+pca_pc13_things = pca_vs_attributes_gr_only_nout |>
+  dplyr::filter(!(variable %in% c("disease_cohort", "year"))) |>
+  dplyr::filter(PC %in% c("PC1", "PC2", "PC3") & ((p.value <= 0.05))) |>
+  dplyr::pull(variable) |>
+  unique()
+just_pc13 = pca_vs_attributes_gr_only_nout |>
+  dplyr::filter(variable %in% pca_pc13_things, PC %in% c("PC1", "PC2", "PC3")) |>
+  dplyr::arrange(PC, p.value) |>
+  dplyr::select(variable, PC, p.value, statistic)
+just_pc13_sigrows = which(just_pc13$p.value <= 0.05)
+pca_table_gronly_pc13 = just_pc13 |>
+  gt::gt() |>
+  gt::fmt_scientific(columns = c(p.value)) |>
+  gt::fmt_number(columns = c(statistic)) |>
+  gt::tab_style(
+          style = list(gt::cell_text(weight = "bold")),
+          locations = gt::cells_body(rows = just_pc13_sigrows))
+pca_table_gronly_pc13
+```
+
+### Diabetes NA Samples
+
+Can we assume that the patients labeled as `N/A` for diabetic status are really `No`?
+As shown in `r table_count$label_text("table-diabetic")`, these all seem to occur in either Green I / II, which makes sense, as there would be no reason to **test** for diabetes in a patient with no known pancreatic issues.
+`r figure_count$label_text("pca-gr-diabetic")` labels the red-green PCA plot with diabetic status instead.
+Although they are not perfectly overlapped, the `N/A` and **No** groups are much more similar and overlapped than the **Yes** group, implying that `N/A` actually means **No**.
+I think we are safe to impute the `N/A` values with **No**.
+
+This is useful to add "diabetes_bl" and "gender" as covariates to test and alternatively control for in multi-way ANOVA tests.
+
+```{r}
+#| label: table-diabetic
+table_diabetic = all_info |>
+  dplyr::select(cohort_c, diabetes_bl) |>
+  dplyr::group_by(cohort_c, diabetes_bl) |>
+  dplyr::summarise(n_sample = dplyr::n()) |>
+  dplyr::ungroup() |>
+  gt::gt()
+table_diabetic
+```
+
+
+```{r}
+#| label: pca-gr-diabetic
+pca_gr_diabetic_plot = pca_gr_only_nout$pca |>
+  ggplot(aes(x = PC1, y = PC3, color = diabetes_bl)) +
+  geom_point(size = 3) +
+  geom_polygon(stat = "ellipse", aes(fill = diabetes_bl, color = NULL), alpha = 0.1) +
+  labs(x = pca_gr_only_nout$variance$labels[1], y = pca_gr_only_nout$variance$labels[3])
+pca_gr_diabetic_plot
+```
+
+`r figure_count$label_text("pca-gr-diabetic")`.
+Comparison of diabetic status using PC1 and PC3.
+
+
+
+## Check Metabolites With High Loadings
+
+For each principal component (PC), we can compare the loadings of each metabolite in that PC to all the other metabolite loadings in other PCs, i.e. a null distribution.
+Therefore, the p-values reported here for each PC should be correct, with no need for multiple testing correction.
+
+`r table_count$label_text("gr-loadings")`.
+P-values of each metabolite feature (feature_id) with a p-value for each PC.
+
+```{r}
+#| label: gr-loadings
+gr_loadings_table =  trimmed_gr_loadings |>
+  dplyr::transmute(metabolite = bin_base_name,
+                   p.value,
+                   PC) |>
+  dplyr::group_by(PC) |>
+  dplyr::arrange(PC, p.value) |>
+  gt::gt() |>
+  gt::fmt_scientific(p.value)
+gr_loadings_table
+```
+
+## Any Changes Using a Limit of Detection?
+
+```{r}
+#| label: n-miss
+all_n_miss = ((sum(normalized_data_zero$intensity == 0) / nrow(normalized_data_zero)) * 100) |>
+  format(digits = 3)
+norm_zero_nopool = normalized_data_zero |>
+  dplyr::filter(!grepl("^pool", sample_id))
+nopool_n_miss = ((sum(norm_zero_nopool$intensity == 0) / nrow(norm_zero_nopool)) * 100) |>
+  format(digits = 3)
+```
+
+All of the above was done using the data directly provided by the metabolomics core, **without** searching for a lower limit of what is actually detectable (limit of detection, LoD).
+Just to double check if setting a LoD made an impact, we did use the standard deviation to mean relationship of metabolites measured in the pooled replicates to estimate a lower limit to be `r mean_cutoff` for the osmolarity - median normalized data, as shown in `r figure_count$label_text("lod-plot")`.
+This results in `r all_n_miss`% or `r nopool_n_miss`% of data missing when including or removing the pooled samples, respectively.
+
+However, it does not improve samples grouping together by disease status (not shown).
+
+```{r}
+#| label: lod-plot
+lod_plot = mean_sd_intensity |>
+  dplyr::filter(!is.na(sd_pool)) |>
+  ggplot(aes(x = mean, y = sd_pool)) +
+  geom_point() +
+  labs(x = "Mean", y = "SDoSD")
+lod_zoom = lod_plot +
+  coord_cartesian(xlim = c(0, 0.5), ylim = c(0, 0.01))
+(lod_plot | lod_zoom) + plot_annotation(tag_levels = "A")
+```
+
+`r figure_count$label_text("lod-plot")`.
+(A) The mean vs SDoSD for all points where we could calculate a SDoSD.
+(B) Zoomed view of (A).
+
+## Metabolite - Metabolite Ratios
+
+Out of curiosity, what happens if we take **all** the possible metabolite - metabolite ratios and calculate them?
+
+### Normalization
+
+Theoretically, this should remove the need for normalization.
+
+```{r}
+#| label: ratio-boxplots
+#| fig-width: 12
+ratio_boxplot = feature_ratios |>
+  dplyr::mutate(cohort_c = as.factor(cohort_c)) |>
+  ggplot(aes(x = disease_sample, y = log(intensity), color = cohort_c)) +
+  geom_boxplot() +
+  theme(axis.text.x = element_blank()) +
+  scale_colour_manual(values = pancreatitis_colors$all_groups)
+ratio_boxplot
+```
+
+`r figure_count$label_text("ratio-boxplots")`.
+Metabolite - metabolite log-ratios.
+
+### ICI-Kt
+
+```{r}
+#| label: ratio-cor
+ratio_cor = ici_cor_ratios$cor
+sample_info_ratio = as.data.frame(all_info)
+rownames(sample_info_ratio) = sample_info_ratio$sample_id
+sample_info_ratio = sample_info_ratio[rownames(ratio_cor), ]
+cor_order_ratio = similarity_reorder(ratio_cor, transform = "sub_1")
+
+sample_info_ratio3 = sample_info_ratio[cor_order_ratio$indices, ]
+cor_vals_ratio = ratio_cor[cor_order_ratio$indices, cor_order_ratio$indices]
+row_annotation_ratio = HeatmapAnnotation(df = as.data.frame(sample_info_ratio3[, c("cohort_c"), drop = FALSE]),
+                                  col = color_list, which = "row",
+                                  show_annotation_name = FALSE)
+col_annotation_ratio = HeatmapAnnotation(df = as.data.frame(sample_info_ratio3[, c("cohort_c"), drop = FALSE]),
+                                  col = color_list, which = "column",
+                                  show_legend = FALSE, show_annotation_name = FALSE)
+
+Heatmap(cor_vals_ratio, col = cor_map, name = "ICI-Kt",
+        bottom_annotation = col_annotation_ratio,
+        right_annotation = row_annotation_ratio,
+        cluster_rows = FALSE,
+        cluster_columns = FALSE,
+        column_title = "ICI-Kendell-tau Correlation Heatmap",
+        column_title_gp = gpar(fontsize = 10),
+        column_names_gp = gpar(fontsize = 8),
+        row_names_gp = gpar(fontsize = 8))
+```
+
+## Green I & Red PCA Table
+
+Here is the information for the PCs from doing PCA on the Green I and Red cohorts only.
+
+```{r}
+#| label: gr-pca-table
+pca_gr_only_nout$variance |>
+  gt::gt() |>
+  gt::fmt_number(decimals = 3)
+```
+
+## Executive Summary
+
+* Disease state is not the biggest driver of variance. Something else is. Possibly **gender**.
+* This doesn't mean there isn't differences in disease states.
+* We were concerned about a confound of **year** with **disease** for Green I vs Red.
+* Metabolite ratios may be required to figure out what is actually different.
+* A lower limit of detection can be determined, but at this stage it doesn't seem to affect anything we've examined for QC/QA.
+
+
+## References

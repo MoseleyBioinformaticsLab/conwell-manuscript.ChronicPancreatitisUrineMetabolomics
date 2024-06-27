@@ -1,0 +1,91 @@
+---
+title: "Check Synonyms"
+author: "Robert M Flight"
+date: last-modified
+date-format: YYYY-MM-DD HH:mm
+format: html
+---
+
+```{r}
+#| label: setup
+#| include: false
+knitr::opts_chunk$set(echo = FALSE)
+## target knits qmds in their own session, so load libraries here.
+source(here::here("packages.R"))
+## if you want access to the functions you've written
+lapply(list.files(here::here("./R"), full.names = TRUE), source)
+```
+
+```{r}
+#| label: load-targets
+#| include: false
+tar_load(c(feature_metadata,
+           cid_synonyms,
+           substance_chebi,
+           kegg_other,
+           sid_to_cid))
+```
+
+```{r}
+#| label: merge-things
+chebi_cid = dplyr::full_join(substance_chebi, sid_to_cid, by = "sid") |>
+  dplyr::filter(!is.na(cid))
+kegg_cid = dplyr::full_join(kegg_other$sid |>
+                              dplyr::mutate(sid = as.integer(sid)), sid_to_cid, by = "sid") |>
+  dplyr::filter(!is.na(cid), !is.na(kegg)) |>
+  dplyr::mutate(kegg_cid = paste0(kegg, ":", cid))
+kegg_chebi_cid = dplyr::full_join(kegg_other$chebi, chebi_cid, by = "chebi") |>
+  dplyr::filter(!is.na(cid), !is.na(kegg)) |>
+  dplyr::mutate(kegg_cid = paste0(kegg, ":", cid))
+
+intersect_kegg_ids = intersect(kegg_cid$kegg, kegg_chebi_cid$kegg)
+kegg_chebi_cid_short = kegg_chebi_cid |>
+  dplyr::filter(kegg %in% intersect_kegg_ids)
+kegg_cid_short = kegg_cid |>
+  dplyr::filter(kegg %in% intersect_kegg_ids)
+setdiff(kegg_chebi_cid_short$kegg_cid, kegg_cid_short$kegg_cid)
+setdiff(kegg_cid_short$kegg_cid, kegg_chebi_cid_short$kegg_cid)
+length(intersect(kegg_cid$kegg_cid, kegg_chebi_cid$kegg_cid))
+```
+
+The number of things different from both seems really big. 
+There are more things different when comparing kegg -> chebi -> sid -> cid to kegg -> sid -> cid, which is expected I guess, because there are multiple matches of kegg to chebi, but only single things for kegg -> sid.
+
+Now, what about the things noted in our feature-metadata?
+
+```{r}
+#| label: compare-feature-metadata
+kegg_features = dplyr::inner_join(feature_metadata, kegg_chebi_cid, by = "kegg")
+kegg_mismatch = kegg_features |>
+  dplyr::filter(pub_chem != cid)
+kegg_wc = dplyr::left_join(kegg_mismatch[, c("bin_base_name", "pub_chem", "kegg")], cid_synonyms, by = c("pub_chem" = "cid"))
+chebi_pubchem = dplyr::left_join(kegg_mismatch[, c("bin_base_name", "cid", "kegg")], cid_synonyms, by = "cid")
+
+kegg_vs_pubchem = dplyr::left_join(kegg_wc, chebi_pubchem, by = "kegg", suffix = c(".kegg", ".chebi_pc"))
+
+kegg_vs_pubchem = kegg_vs_pubchem |>
+  dplyr::mutate(kegg_dist = stringdist::stringdist(first_synonym.kegg, bin_base_name.kegg, method = "lv"),
+                chebi_dist = stringdist::stringdist(first_synonym.chebi_pc, bin_base_name.chebi_pc, method = "lv"))
+kegg_vs_pubchem = kegg_vs_pubchem |>
+  dplyr::mutate(kegg_dist = dplyr::case_when(
+    is.na(kegg_dist) ~ 100,
+    TRUE ~ kegg_dist
+  ),
+  chebi_dist = dplyr::case_when(
+    is.na(chebi_dist) ~ 100,
+    TRUE ~ chebi_dist
+  ))
+
+chosen_cid = purrr::map_int(seq(1, nrow(kegg_vs_pubchem)), \(irow){
+  if (kegg_vs_pubchem$kegg_dist[irow] < kegg_vs_pubchem$chebi_dist[irow]) {
+    return(kegg_vs_pubchem$pub_chem[irow])
+  } else {
+    return(kegg_vs_pubchem$cid[irow])
+  }
+})
+
+discordant_tibble = tibble::tibble(kegg = kegg_vs_pubchem$kegg,
+                                   pub_chem = chosen_cid)
+discordant_ids = dplyr::left_join(discordant_tibble, feature_metadata |>
+                                    dplyr::select(-pub_chem), by = "kegg")
+```
