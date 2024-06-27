@@ -1701,26 +1701,6 @@
       ],
       "Hash": "03009c105dfae79460b8eb9d8cf791e4"
     },
-    "gtExtras": {
-      "Package": "gtExtras",
-      "Version": "0.4.5",
-      "Source": "Repository",
-      "Repository": "CRAN",
-      "Requirements": [
-        "R",
-        "commonmark",
-        "dplyr",
-        "fontawesome",
-        "ggplot2",
-        "glue",
-        "gt",
-        "htmltools",
-        "paletteer",
-        "rlang",
-        "scales"
-      ],
-      "Hash": "f1d0ad77f1ad81d9711d813ec01492c3"
-    },
     "gtable": {
       "Package": "gtable",
       "Version": "0.3.3",
@@ -2217,9 +2197,13 @@
     "metabolonDataProcessing": {
       "Package": "metabolonDataProcessing",
       "Version": "0.0.29",
-      "Source": "Local",
-      "RemoteType": "local",
-      "RemoteUrl": "~/Projects/work/packages/lab/metabolonDataProcessing",
+      "Source": "GitHub",
+      "RemoteType": "github",
+      "RemoteHost": "api.github.com",
+      "RemoteUsername": "moseleybioinformaticslab",
+      "RemoteRepo": "metabolonDataProcessing",
+      "RemoteRef": "main",
+      "RemoteSha": "d94a7c0de94db5a25ae5fc1428b473b3fa13631e",
       "Requirements": [
         "R",
         "cli",
@@ -2235,7 +2219,7 @@
         "tidygraph",
         "tidyselect"
       ],
-      "Hash": "0fde41024e8aeea9c804b74836406370"
+      "Hash": "3f64ca11c19d1ff6153453cde35c9ecc"
     },
     "mgcv": {
       "Package": "mgcv",
@@ -2408,20 +2392,6 @@
         "viridisLite"
       ],
       "Hash": "a028d99cbcc97f6fc332eae098925399"
-    },
-    "paletteer": {
-      "Package": "paletteer",
-      "Version": "1.5.0",
-      "Source": "Repository",
-      "Repository": "CRAN",
-      "Requirements": [
-        "R",
-        "prismatic",
-        "rematch2",
-        "rlang",
-        "rstudioapi"
-      ],
-      "Hash": "2cc72e89c9f4dc12c38d848914aac313"
     },
     "parallelly": {
       "Package": "parallelly",
@@ -2655,19 +2625,6 @@
       "Repository": "CRAN",
       "Hash": "95ef9167b75dde9d2ccc3c7528393e7e"
     },
-    "prismatic": {
-      "Package": "prismatic",
-      "Version": "1.1.1",
-      "Source": "Repository",
-      "Repository": "CRAN",
-      "Requirements": [
-        "R",
-        "farver",
-        "grDevices",
-        "graphics"
-      ],
-      "Hash": "faa2193fdec94a45b4390aefc1280a62"
-    },
     "processx": {
       "Package": "processx",
       "Version": "3.8.1",
@@ -2764,28 +2721,6 @@
         "vctrs"
       ],
       "Hash": "d71c815267c640f17ddbf7f16144b4bb"
-    },
-    "pwr": {
-      "Package": "pwr",
-      "Version": "1.3-0",
-      "Source": "Repository",
-      "Repository": "CRAN",
-      "Requirements": [
-        "graphics",
-        "stats"
-      ],
-      "Hash": "adfa41db3678b41bf9235c514c51799a"
-    },
-    "pwrFDR": {
-      "Package": "pwrFDR",
-      "Version": "2.8.9",
-      "Source": "Repository",
-      "Repository": "CRAN",
-      "Requirements": [
-        "methods",
-        "stats"
-      ],
-      "Hash": "07fec3416200f2ca73bc82eb656adf30"
     },
     "qqman": {
       "Package": "qqman",
